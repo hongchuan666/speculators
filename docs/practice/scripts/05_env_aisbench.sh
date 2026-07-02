@@ -22,9 +22,8 @@ trap 'echo "出错！请检查日志。"; exit 1' ERR
 ENV_NAME="${ENV_NAME:-aisbench}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10}"
 MINICONDA_DIR="${MINICONDA_DIR:-${HOME}/miniconda3}"
-# ais_bench 路径，默认检测 ~/ais_benchmark/
-_DEFAULT_AIS=$(pwd)/ais_benchmark
-[ -d "${HOME}/ais_benchmark" ] && _DEFAULT_AIS="${HOME}/ais_benchmark"
+# ais_bench 路径，clone 到 ~/ais_benchmark
+_DEFAULT_AIS="${HOME}/ais_benchmark"
 AIS_BENCH_DIR="${AIS_BENCH_DIR:-${_DEFAULT_AIS}}"
 AIS_BENCH_REPO="${AIS_BENCH_REPO:-https://github.com/AISBench/benchmark.git}"
 GSM8K_DATA_DIR="${GSM8K_DATA_DIR:-${AIS_BENCH_DIR}/ais_bench/datasets/gsm8k}"

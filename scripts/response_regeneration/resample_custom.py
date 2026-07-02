@@ -223,19 +223,11 @@ async def main():
                     continue
                 try:
                     msgs, positions = _find_assistant_positions(s)
-                except ValueError as e:
+                except ValueError:
+                    # 脏数据跳过（如 conversation 以 assistant 开头）
                     stats["errors"] += 1
                     progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
                     progress.update(1)
-                    # 将脏数据写入输出标记为 error
-                    error_out = {
-                        "source_index": s_id_val,
-                        "source_id": str(s_id_val),
-                        "conversations": _get_messages(s),
-                        "metadata": {"error": str(e), "skipped": True},
-                    }
-                    out_fh.write(json.dumps(error_out, ensure_ascii=False) + "\n")
-                    out_fh.flush()
                     continue
                 if not positions:
                     # 没有 assistant 消息，跳过

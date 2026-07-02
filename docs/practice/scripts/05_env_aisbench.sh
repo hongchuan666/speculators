@@ -146,7 +146,10 @@ install_aisbench() {
 
     echo "=== 安装 ais_bench ==="
     cd "${AIS_BENCH_DIR}"
-    pip install -e .
+    pip install -e . --no-deps
+    pip install -r requirements/runtime.txt
+    # 安装 CPU 版 torch（避免下载 NVIDIA CUDA 库）
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
     echo "ais_bench 安装完成"
 }
 

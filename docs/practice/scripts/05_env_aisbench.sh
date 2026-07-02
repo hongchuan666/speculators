@@ -33,6 +33,11 @@ MINICONDA_URL="${MINICONDA_URL:-https://repo.anaconda.com/miniconda/Miniconda3-l
 # pip 镜像源（国内加速，取消注释即可）
 # PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
+# PyTorch CPU 版下载源（国内可换镜像加速）
+#   - 上海交大: https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/
+#   - 阿里云:   https://mirrors.aliyun.com/pytorch-wheels/cpu/
+TORCH_CPU_INDEX="${TORCH_CPU_INDEX:-https://download.pytorch.org/whl/cpu}"
+
 # 代理脚本路径（pip install 时需代理可配置）
 # PROXY_SCRIPT="${PROXY_SCRIPT:-/path/to/proxy.sh}"
 
@@ -146,8 +151,8 @@ install_aisbench() {
 
     echo "=== 安装 ais_bench ==="
     cd "${AIS_BENCH_DIR}"
-    # 先装 CPU 版 torch，避免拉 NVIDIA CUDA 库（数百 MB）
-    pip install torch --index-url https://download.pytorch.org/whl/cpu
+    # 先装 CPU 版 torch（可配置镜像源避免拉 NVIDIA CUDA 库）
+    pip install torch --index-url "${TORCH_CPU_INDEX}"
     # 再装 ais_bench 及其余依赖
     pip install -e .
     echo "ais_bench 安装完成"

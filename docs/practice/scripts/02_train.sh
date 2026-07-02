@@ -58,7 +58,7 @@ EPOCHS="${EPOCHS:-5}"
 LR="${LR:-1e-4}"
 
 # speculators 仓库路径
-SPECULATORS_DIR="${SPECULATORS_DIR:-.}"
+SPECULATORS_DIR="${SPECULATORS_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 
 # ============================================================
 # 参数解析

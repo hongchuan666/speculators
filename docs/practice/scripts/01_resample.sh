@@ -45,7 +45,7 @@ RESUME="${RESUME:-true}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 
 # speculators 仓库路径
-SPECULATORS_DIR="${SPECULATORS_DIR:-/path/to/speculators}"
+SPECULATORS_DIR="${SPECULATORS_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 
 # ============================================================
 # 参数解析

@@ -118,7 +118,20 @@ async def main():
     seen = load_seen(args.output) if args.resume else set()
 
     with open(args.input) as f:
-        samples = [json.loads(line) for line in f]
+        raw = f.read().strip()
+        # 尝试 JSON（list 或 object），回退到 JSONL
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, list):
+            samples = parsed
+        elif isinstance(parsed, dict):
+            samples = [parsed]
+        else:
+            # JSONL: 每行一个 JSON
+            samples = [json.loads(line) for line in raw.split("\n") if line.strip()]
 
     if args.limit:
         samples = samples[:args.limit]

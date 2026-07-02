@@ -13,7 +13,7 @@
 
 set -eEuo pipefail
 
-trap 'echo "出错！请检查日志。"; exit 1' ERR
+trap 'echo "[ERROR] 脚本在第 $LINENO 行出错（exit code: $?）。请检查上面的错误信息。"; exit 1' ERR
 
 # ============================================================
 # 配置参数
@@ -121,12 +121,9 @@ clone_repo() {
 install_aisbench() {
     echo "=== 创建 conda 环境: ${ENV_NAME} (Python ${PYTHON_VERSION}) ==="
 
-    set +e
-    conda env list | grep -q "^${ENV_NAME}\s"
-    local env_exists=$?
-    set -e
-
-    if [ "$env_exists" -eq 0 ]; then
+    # 检查环境是否存在（用文件避免 conda shell 函数与 pipefail 冲突）
+    conda env list > /tmp/_conda_envs.txt 2>&1 || true
+    if grep -q "^${ENV_NAME}\s" /tmp/_conda_envs.txt 2>/dev/null; then
         echo "conda 环境 ${ENV_NAME} 已存在，跳过创建"
     else
         # 接受 conda ToS（新版本要求）

@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--resume", action="store_true", help="Skip existing in output")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument("--no-think", action="store_true", help="Disable thinking mode (Qwen3 enable_thinking=false)")
+    parser.add_argument("--id-key", default=None, help="Field name for unique identifier (default: auto-detect source_index > id)")
     return parser.parse_args()
 
 
@@ -40,15 +41,21 @@ async def detect_model(endpoint: str) -> str:
         return data["data"][0]["id"]
 
 
-def load_seen(path: str) -> set:
+def _get_id(d: dict, id_key: str | None = None):
+    """Extract unique identifier from a record, supporting arbitrary key names."""
+    if id_key:
+        return d.get(id_key)
+    return d.get("source_index") or d.get("id") or d.get("source_id")
+
+
+def load_seen(path: str, id_key: str | None = None) -> set:
     if not os.path.isfile(path):
         return set()
     seen = set()
     with open(path) as f:
         for line in f:
             try:
-                d = json.loads(line)
-                seen.add(d.get("source_index") or d.get("id"))
+                seen.add(_get_id(json.loads(line), id_key))
             except json.JSONDecodeError:
                 continue
     return seen
@@ -116,7 +123,10 @@ async def main():
     print(f"Input: {args.input}")
     print(f"Output: {args.output}")
 
-    seen = load_seen(args.output) if args.resume else set()
+    id_key = args.id_key
+    seen = load_seen(args.output, id_key) if args.resume else set()
+
+    print(f"ID key: {id_key or 'auto (source_index > id > source_id)'}")
 
     with open(args.input) as f:
         raw = f.read().strip()
@@ -150,14 +160,12 @@ async def main():
                        for _ in range(args.concurrency)]
 
             for s in samples:
-                # 兼容 id / source_index / source_id
-                s_idx = s.get("source_index") or s.get("id")
-                s_id = s.get("source_id") or s.get("id")
-                if s_idx in seen:
+                s_id_val = _get_id(s, id_key)
+                if s_id_val in seen:
                     continue
                 await queue.put({
-                    "source_index": s_idx,
-                    "source_id": s_id,
+                    "source_index": s_id_val,
+                    "source_id": str(s_id_val),
                     "prompt": s["conversations"][0]["content"],
                 })
 

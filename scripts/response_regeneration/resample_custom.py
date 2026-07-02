@@ -48,17 +48,46 @@ def _get_id(d: dict, id_key: str | None = None):
     return d.get("source_index") or d.get("id") or d.get("source_id")
 
 
-def _get_user_prompt(d: dict) -> str:
-    """Extract user prompt, supporting conversations/messages, role/from, content/value."""
+def _get_messages(d: dict) -> list[dict]:
+    """Extract message list from record, normalizing role/content keys."""
     for field in ("conversations", "messages", "chat"):
         msgs = d.get(field, [])
-        if not isinstance(msgs, list):
-            continue
-        for msg in msgs:
-            role = (msg.get("role") or msg.get("from") or "").lower()
-            if role in ("user", "human"):
-                return msg.get("content") or msg.get("value") or ""
-    raise ValueError(f"Cannot find user prompt in record keys={list(d.keys())}")
+        if isinstance(msgs, list) and msgs:
+            normalized = []
+            for m in msgs:
+                role = m.get("role") or m.get("from") or ""
+                content = m.get("content") or m.get("value") or ""
+                normalized.append({"role": role, "content": content})
+            return normalized
+    return []
+
+
+def _build_prompt_messages(d: dict) -> list[dict]:
+    """Build messages list for API call.
+
+    If last message is assistant, treat it as the one to resample:
+      keep all prior messages as context, drop the last assistant message.
+    Otherwise, just use the first user message.
+    """
+    msgs = _get_messages(d)
+    if not msgs:
+        raise ValueError(f"Cannot find messages in record keys={list(d.keys())}")
+
+    # 标准化 role 名
+    for m in msgs:
+        r = m["role"].lower()
+        if r in ("human",):
+            m["role"] = "user"
+        elif r in ("gpt", "assistant"):
+            m["role"] = "assistant"
+
+    # 如果最后一条是 assistant，去掉它（需要重采样这条回复）
+    if msgs and msgs[-1]["role"] == "assistant":
+        # 多轮：保留历史，只丢掉最后的 assistant 回复
+        return msgs[:-1]
+    else:
+        # 单条 user 消息
+        return [msgs[0]]
 
 
 def load_seen(path: str, id_key: str | None = None) -> set:
@@ -83,7 +112,7 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
 
         payload = {
             "model": args.model,
-            "messages": [{"role": "user", "content": item["prompt"]}],
+            "messages": item["messages"],
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,
         }
@@ -95,13 +124,17 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
                 data = await resp.json()
             choice = data["choices"][0]
             content = choice["message"]["content"]
+            # 保留原始历史 + 新生成的 assistant 回复
+            history = list(item["original_msgs"])
+            # 如果最后一条是 assistant，替换它；否则追加
+            if history and history[-1]["role"] == "assistant":
+                history[-1] = {"role": "assistant", "content": content}
+            else:
+                history.append({"role": "assistant", "content": content})
             output = {
                 "source_index": item["source_index"],
                 "source_id": item["source_id"],
-                "conversations": [
-                    {"role": "user", "content": item["prompt"]},
-                    {"role": "assistant", "content": content},
-                ],
+                "conversations": history,
                 "metadata": {
                     "model": args.model,
                     "latency_s": round(time.time() - start, 3),
@@ -115,7 +148,7 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
             output = {
                 "source_index": item["source_index"],
                 "source_id": item["source_id"],
-                "conversations": [{"role": "user", "content": item["prompt"]}],
+                "conversations": item["original_msgs"],
                 "metadata": {"error": repr(e)},
             }
             out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
@@ -179,7 +212,8 @@ async def main():
                 await queue.put({
                     "source_index": s_id_val,
                     "source_id": str(s_id_val),
-                    "prompt": _get_user_prompt(s),
+                    "messages": _build_prompt_messages(s),
+                    "original_msgs": _get_messages(s),  # 用于输出
                 })
 
             for _ in workers:

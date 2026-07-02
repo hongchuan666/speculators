@@ -47,7 +47,8 @@ def load_seen(path: str) -> set:
     with open(path) as f:
         for line in f:
             try:
-                seen.add(json.loads(line).get("source_index"))
+                d = json.loads(line)
+                seen.add(d.get("source_index") or d.get("id"))
             except json.JSONDecodeError:
                 continue
     return seen
@@ -149,11 +150,14 @@ async def main():
                        for _ in range(args.concurrency)]
 
             for s in samples:
-                if s.get("source_index") in seen:
+                # 兼容 id / source_index / source_id
+                s_idx = s.get("source_index") or s.get("id")
+                s_id = s.get("source_id") or s.get("id")
+                if s_idx in seen:
                     continue
                 await queue.put({
-                    "source_index": s.get("source_index"),
-                    "source_id": s.get("source_id"),
+                    "source_index": s_idx,
+                    "source_id": s_id,
                     "prompt": s["conversations"][0]["content"],
                 })
 

@@ -62,32 +62,33 @@ def _get_messages(d: dict) -> list[dict]:
     return []
 
 
-def _build_prompt_messages(d: dict) -> list[dict]:
-    """Build messages list for API call.
-
-    If last message is assistant, treat it as the one to resample:
-      keep all prior messages as context, drop the last assistant message.
-    Otherwise, just use the first user message.
-    """
-    msgs = _get_messages(d)
-    if not msgs:
-        raise ValueError(f"Cannot find messages in record keys={list(d.keys())}")
-
-    # 标准化 role 名
+def _normalize_roles(msgs: list[dict]) -> list[dict]:
+    """标准化 role 名并校验数据合法性。"""
+    out = []
     for m in msgs:
         r = m["role"].lower()
         if r in ("human",):
-            m["role"] = "user"
+            r = "user"
         elif r in ("gpt", "assistant"):
-            m["role"] = "assistant"
+            r = "assistant"
+        out.append({"role": r, "content": m["content"]})
+    return out
 
-    # 如果最后一条是 assistant，去掉它（需要重采样这条回复）
-    if msgs and msgs[-1]["role"] == "assistant":
-        # 多轮：保留历史，只丢掉最后的 assistant 回复
-        return msgs[:-1]
-    else:
-        # 单条 user 消息
-        return [msgs[0]]
+
+def _find_assistant_positions(d: dict) -> tuple[list[dict], list[int]]:
+    """解析对话，返回 (标准化消息, assistant位置列表)。
+
+    以assistant开头视为脏数据，返回空列表。
+    """
+    msgs = _normalize_roles(_get_messages(d))
+    if not msgs:
+        raise ValueError(f"Cannot find messages in record keys={list(d.keys())}")
+
+    if msgs[0]["role"] == "assistant":
+        raise ValueError("Dirty data: conversation starts with assistant")
+
+    positions = [i for i, m in enumerate(msgs) if m["role"] == "assistant"]
+    return msgs, positions
 
 
 def load_seen(path: str, id_key: str | None = None) -> set:
@@ -110,54 +111,65 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
             queue.task_done()
             return
 
-        payload = {
-            "model": args.model,
-            "messages": item["messages"],
-            "max_tokens": args.max_tokens,
-            "temperature": args.temperature,
-        }
-        if args.no_think:
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-        start = time.time()
-        try:
-            async with sem, session.post(args.endpoint, json=payload) as resp:
-                data = await resp.json()
-            choice = data["choices"][0]
-            content = choice["message"]["content"]
-            # 保留原始历史 + 新生成的 assistant 回复
-            history = list(item["original_msgs"])
-            # 如果最后一条是 assistant，替换它；否则追加
-            if history and history[-1]["role"] == "assistant":
-                history[-1] = {"role": "assistant", "content": content}
-            else:
-                history.append({"role": "assistant", "content": content})
-            output = {
-                "source_index": item["source_index"],
-                "source_id": item["source_id"],
-                "conversations": history,
-                "metadata": {
-                    "model": args.model,
-                    "latency_s": round(time.time() - start, 3),
-                    "finish_reason": choice.get("finish_reason"),
-                },
+        msgs, assistant_positions = item["msgs"], item["assistant_positions"]
+        total_cost = 0.0
+        finish_reason = None
+        sample_error = None
+
+        for idx in assistant_positions:
+            # 取到当前 assistant 位置（不包括它）作为上下文
+            context = msgs[:idx]
+            payload = {
+                "model": args.model,
+                "messages": context,
+                "max_tokens": args.max_tokens,
+                "temperature": args.temperature,
             }
-            out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
-            out_fh.flush()
-            stats["ok"] += 1
-        except Exception as e:
+            if args.no_think:
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+            step_start = time.time()
+            try:
+                async with sem, session.post(args.endpoint, json=payload) as resp:
+                    data = await resp.json()
+                choice = data["choices"][0]
+                new_content = choice["message"]["content"]
+                # 替换当前 assistant 消息
+                msgs[idx]["content"] = new_content
+                total_cost += time.time() - step_start
+                if finish_reason is None:
+                    finish_reason = choice.get("finish_reason")
+            except Exception as e:
+                sample_error = repr(e)
+                break
+
+        if sample_error:
             output = {
                 "source_index": item["source_index"],
                 "source_id": item["source_id"],
                 "conversations": item["original_msgs"],
-                "metadata": {"error": repr(e)},
+                "metadata": {"error": sample_error},
             }
-            out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
-            out_fh.flush()
             stats["errors"] += 1
-        finally:
-            progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
-            progress.update(1)
-            queue.task_done()
+        else:
+            output = {
+                "source_index": item["source_index"],
+                "source_id": item["source_id"],
+                "conversations": msgs,
+                "metadata": {
+                    "model": args.model,
+                    "latency_s": round(total_cost, 3),
+                    "num_resampled": len(assistant_positions),
+                    "finish_reason": finish_reason,
+                },
+            }
+            stats["ok"] += 1
+
+        out_fh.write(json.dumps(output, ensure_ascii=False) + "\n")
+        out_fh.flush()
+        progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+        progress.update(1)
+        queue.task_done()
 
 
 async def main():
@@ -209,11 +221,34 @@ async def main():
                 s_id_val = _get_id(s, id_key)
                 if s_id_val in seen:
                     continue
+                try:
+                    msgs, positions = _find_assistant_positions(s)
+                except ValueError as e:
+                    stats["errors"] += 1
+                    progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+                    progress.update(1)
+                    # 将脏数据写入输出标记为 error
+                    error_out = {
+                        "source_index": s_id_val,
+                        "source_id": str(s_id_val),
+                        "conversations": _get_messages(s),
+                        "metadata": {"error": str(e), "skipped": True},
+                    }
+                    out_fh.write(json.dumps(error_out, ensure_ascii=False) + "\n")
+                    out_fh.flush()
+                    continue
+                if not positions:
+                    # 没有 assistant 消息，跳过
+                    stats["errors"] += 1
+                    progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
+                    progress.update(1)
+                    continue
                 await queue.put({
                     "source_index": s_id_val,
                     "source_id": str(s_id_val),
-                    "messages": _build_prompt_messages(s),
-                    "original_msgs": _get_messages(s),  # 用于输出
+                    "msgs": msgs,
+                    "assistant_positions": positions,
+                    "original_msgs": _get_messages(s),
                 })
 
             for _ in workers:
@@ -222,7 +257,8 @@ async def main():
 
     out_fh.close()
 
-    print(f"Done. OK={stats['ok']}, Errors={stats['errors']}")
+    skipped = len(seen) if args.resume else 0
+    print(f"Done. OK={stats['ok']}, Errors={stats['errors']}, Skipped={skipped}")
 
 
 if __name__ == "__main__":

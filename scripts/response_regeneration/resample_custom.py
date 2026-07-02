@@ -48,6 +48,19 @@ def _get_id(d: dict, id_key: str | None = None):
     return d.get("source_index") or d.get("id") or d.get("source_id")
 
 
+def _get_user_prompt(d: dict) -> str:
+    """Extract user prompt, supporting conversations/messages, role/from, content/value."""
+    for field in ("conversations", "messages", "chat"):
+        msgs = d.get(field, [])
+        if not isinstance(msgs, list):
+            continue
+        for msg in msgs:
+            role = (msg.get("role") or msg.get("from") or "").lower()
+            if role in ("user", "human"):
+                return msg.get("content") or msg.get("value") or ""
+    raise ValueError(f"Cannot find user prompt in record keys={list(d.keys())}")
+
+
 def load_seen(path: str, id_key: str | None = None) -> set:
     if not os.path.isfile(path):
         return set()
@@ -166,7 +179,7 @@ async def main():
                 await queue.put({
                     "source_index": s_id_val,
                     "source_id": str(s_id_val),
-                    "prompt": s["conversations"][0]["content"],
+                    "prompt": _get_user_prompt(s),
                 })
 
             for _ in workers:

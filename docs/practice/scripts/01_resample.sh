@@ -20,12 +20,11 @@ set -euo pipefail
 # 配置参数
 # ============================================================
 
-# 推理服务
-MODEL="${MODEL:-/path/to/model}"
-SERVING_GPUS="${SERVING_GPUS:-0,1}"
+# 推理服务实例列表（支持多个 --instance）
+# 格式: model:gpus:port[:quant]
+# 例如: --instance /path/to/model:0,1:8000 --instance /path/to/model2:2,3:8001:ascend
+INSTANCES=()
 SERVING_TP="${SERVING_TP:-2}"
-SERVING_QUANT="${SERVING_QUANT:-}"
-SERVING_PORT="${SERVING_PORT:-8000}"
 SERVING_MAX_LEN="${SERVING_MAX_LEN:-8192}"
 
 # 重采样
@@ -52,11 +51,13 @@ shift || true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model) MODEL="$2"; shift 2 ;;
-        --gpus) SERVING_GPUS="$2"; shift 2 ;;
-        --port) SERVING_PORT="$2"; shift 2 ;;
-        --quantization) SERVING_QUANT="$2"; shift 2 ;;
+        --instance) INSTANCES+=("$2"); shift 2 ;;
         --endpoint) ENDPOINTS+=("$2"); shift 2 ;;
+        # 单实例参数（兼容旧用法，会被合并到 INSTANCES）
+        --model) _MODEL="$2"; shift 2 ;;
+        --gpus) _GPUS="$2"; shift 2 ;;
+        --port) _PORT="$2"; shift 2 ;;
+        --quantization) _QUANT="$2"; shift 2 ;;
         --input) INPUT_DATA="$2"; shift 2 ;;
         --output) OUTPUT_DATA="$2"; shift 2 ;;
         --limit) LIMIT="$2"; shift 2 ;;
@@ -74,10 +75,8 @@ while [[ $# -gt 0 ]]; do
             echo "  resample   仅重采样（默认）"
             echo ""
             echo "服务参数:"
-            echo "  --model PATH      模型路径"
-            echo "  --gpus STR        GPU 分配, 如 '0,1'"
-            echo "  --port N          服务端口 (默认: 8000)"
-            echo "  --quantization STR 量化方式 (如 ascend)"
+            echo "  --instance STR    服务实例 (可多个), 格式: model:gpus:port[:quant]"
+            echo "                    如: --instance /m1:0,1:8000 --instance /m2:2,3:8001:ascend"
             echo ""
             echo "重采样参数:"
             echo "  --input PATH      输入 JSONL/JSON 路径"
@@ -98,34 +97,61 @@ cd "${SPECULATORS_DIR}"
 # 启动推理服务
 # ============================================================
 
+VLLM_PIDS=()
+
+parse_instance() {
+    local spec="$1"
+    IFS=':' read -r model gpus port quant <<< "${spec}:"
+    echo "${model}" "${gpus}" "${port}" "${quant}"
+}
+
 start_service() {
-    local port="${SERVING_PORT}"
-    echo "=== 启动推理服务: ${MODEL} (端口 ${port}, GPU ${SERVING_GPUS}) ==="
+    # 合并传统参数到 INSTANCES
+    if [ ${#INSTANCES[@]} -eq 0 ] && [ -n "${_MODEL:-}" ]; then
+        INSTANCES+=("${_MODEL}:${_GPUS:-0,1}:${_PORT:-8000}:${_QUANT:-}")
+    fi
+    if [ ${#INSTANCES[@]} -eq 0 ]; then
+        INSTANCES+=("/path/to/model:0,1:8000:")
+    fi
 
-    local cmd="ASCEND_RT_VISIBLE_DEVICES=${SERVING_GPUS} vllm serve ${MODEL}"
-    cmd+=" --tensor-parallel-size ${SERVING_TP}"
-    cmd+=" --dtype bfloat16 --max-model-len ${SERVING_MAX_LEN}"
-    cmd+=" --port ${port} --gpu-memory-utilization 0.9 --max-num-seqs 256"
-    [ -n "${SERVING_QUANT}" ] && cmd+=" --quantization ${SERVING_QUANT}"
+    local log_file="/tmp/vllm_resample.log"
+    > "${log_file}"
 
-    eval "${cmd} > /tmp/vllm_resample.log 2>&1 &"
-    VLLM_PID=$!
+    for instance in "${INSTANCES[@]}"; do
+        read -r model gpus port quant <<< "$(parse_instance "${instance}")"
+        echo "=== 启动推理服务: ${model} (端口 ${port}, GPU ${gpus}) ==="
 
-    echo "等待服务就绪 (PID=${VLLM_PID})..."
-    for i in $(seq 1 60); do
-        if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
-            echo "服务就绪 (${i}s)"
-            return 0
-        fi
-        sleep 2
+        local cmd="ASCEND_RT_VISIBLE_DEVICES=${gpus} vllm serve ${model}"
+        cmd+=" --tensor-parallel-size ${SERVING_TP}"
+        cmd+=" --dtype bfloat16 --max-model-len ${SERVING_MAX_LEN}"
+        cmd+=" --port ${port} --gpu-memory-utilization 0.9 --max-num-seqs 256"
+        [ -n "${quant}" ] && cmd+=" --quantization ${quant}"
+
+        eval "${cmd} >> ${log_file} 2>&1 &"
+        VLLM_PIDS+=($!)
     done
-    echo "服务启动超时"
-    exit 1
+
+    # 等待所有服务就绪
+    for instance in "${INSTANCES[@]}"; do
+        read -r model gpus port quant <<< "$(parse_instance "${instance}")"
+        echo "等待服务 ${port} 就绪..."
+        for i in $(seq 1 60); do
+            if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
+                echo "  端口 ${port} 就绪 (${i}s)"
+                break
+            fi
+            sleep 2
+        done
+    done
+    echo "全部服务就绪"
 }
 
 stop_service() {
     echo "=== 停止推理服务 ==="
-    [ -n "${VLLM_PID:-}" ] && kill "${VLLM_PID}" 2>/dev/null || true
+    for pid in "${VLLM_PIDS[@]}"; do
+        kill "${pid}" 2>/dev/null || true
+    done
+    sleep 1
     ps aux | grep -E "VLLM::" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
 }
 
@@ -136,9 +162,16 @@ stop_service() {
 run_resample() {
     local args=""
     args+=" --input ${INPUT_DATA} --output ${OUTPUT_DATA}"
-    # 默认 endpoint
+    # 默认 endpoint: 从 --instance 推断
+    if [ ${#ENDPOINTS[@]} -eq 0 ] && [ ${#INSTANCES[@]} -gt 0 ]; then
+        for instance in "${INSTANCES[@]}"; do
+            read -r _ _ port _ <<< "$(parse_instance "${instance}")"
+            ENDPOINTS+=("http://localhost:${port}/v1/chat/completions")
+        done
+    fi
+    # 兜底默认
     if [ ${#ENDPOINTS[@]} -eq 0 ]; then
-        ENDPOINTS=("http://localhost:${SERVING_PORT}/v1/chat/completions")
+        ENDPOINTS=("http://localhost:8000/v1/chat/completions")
     fi
     for ep in "${ENDPOINTS[@]}"; do
         args+=" --endpoint ${ep}"

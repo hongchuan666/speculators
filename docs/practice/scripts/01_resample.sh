@@ -22,9 +22,13 @@ set -euo pipefail
 
 # 推理服务实例列表
 # --instance model:gpus:port[:quant]  完整指定（模型路径可不同）
-# --service  gpus:port[:quant]         共享 --model 路径
+# --service  gpus:port                 共享 --model 和 --quantization
 INSTANCES=()
 SERVICES=()
+
+# 模型和量化（给 --service 提供默认值）
+_MODEL="${_MODEL:-/home/hongchuan/model/Qwen3-8B}"
+_QUANT="${_QUANT:-}"
 SERVING_TP="${SERVING_TP:-2}"
 SERVING_MAX_LEN="${SERVING_MAX_LEN:-8192}"
 

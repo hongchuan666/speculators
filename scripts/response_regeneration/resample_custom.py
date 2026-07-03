@@ -84,8 +84,9 @@ def _find_assistant_positions(d: dict) -> tuple[list[dict], list[int]]:
     if not msgs:
         raise ValueError(f"Cannot find messages in record keys={list(d.keys())}")
 
-    if msgs[0]["role"] == "assistant":
-        raise ValueError("Dirty data: conversation starts with assistant")
+    # 跳过开头的 assistant 消息（如 [gpt, user, gpt] → [user, gpt]）
+    while msgs and msgs[0]["role"] == "assistant":
+        msgs.pop(0)
 
     positions = [i for i, m in enumerate(msgs) if m["role"] == "assistant"]
     return msgs, positions
@@ -224,7 +225,7 @@ async def main():
                 try:
                     msgs, positions = _find_assistant_positions(s)
                 except ValueError:
-                    # 脏数据跳过（如 conversation 以 assistant 开头）
+                    # 无法解析（如找不到 messages 字段）
                     stats["errors"] += 1
                     progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
                     progress.update(1)

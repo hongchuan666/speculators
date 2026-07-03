@@ -29,7 +29,8 @@ SERVING_PORT="${SERVING_PORT:-8000}"
 SERVING_MAX_LEN="${SERVING_MAX_LEN:-8192}"
 
 # 重采样
-ENDPOINT="${ENDPOINT:-http://localhost:${SERVING_PORT}/v1/chat/completions}"
+# 端点列表（支持多个 --endpoint）
+ENDPOINTS=()
 INPUT_DATA="${INPUT_DATA:-/path/to/input.jsonl}"
 OUTPUT_DATA="${OUTPUT_DATA:-/path/to/resampled.jsonl}"
 LIMIT="${LIMIT:-}"
@@ -55,7 +56,7 @@ while [[ $# -gt 0 ]]; do
         --gpus) SERVING_GPUS="$2"; shift 2 ;;
         --port) SERVING_PORT="$2"; shift 2 ;;
         --quantization) SERVING_QUANT="$2"; shift 2 ;;
-        --endpoint) ENDPOINT="$2"; shift 2 ;;
+        --endpoint) ENDPOINTS+=("$2"); shift 2 ;;
         --input) INPUT_DATA="$2"; shift 2 ;;
         --output) OUTPUT_DATA="$2"; shift 2 ;;
         --limit) LIMIT="$2"; shift 2 ;;
@@ -135,7 +136,14 @@ stop_service() {
 run_resample() {
     local args=""
     args+=" --input ${INPUT_DATA} --output ${OUTPUT_DATA}"
-    args+=" --endpoint ${ENDPOINT} --concurrency ${CONCURRENCY}"
+    # 默认 endpoint
+    if [ ${#ENDPOINTS[@]} -eq 0 ]; then
+        ENDPOINTS=("http://localhost:${SERVING_PORT}/v1/chat/completions")
+    fi
+    for ep in "${ENDPOINTS[@]}"; do
+        args+=" --endpoint ${ep}"
+    done
+    args+=" --concurrency ${CONCURRENCY}"
     args+=" --max-tokens ${MAX_TOKENS} --temperature ${TEMPERATURE}"
 
     [ -n "${LIMIT}" ] && args+=" --limit ${LIMIT}"
@@ -145,7 +153,7 @@ run_resample() {
     echo "=========================================="
     echo "  重采样配置"
     echo "------------------------------------------"
-    echo "  端点:     ${ENDPOINT}"
+    echo "  端点:     ${ENDPOINTS[*]}"
     echo "  输入:     ${INPUT_DATA}"
     echo "  输出:     ${OUTPUT_DATA}"
     echo "  并发:     ${CONCURRENCY}"

@@ -21,8 +21,8 @@ from tqdm import tqdm
 def parse_args():
     parser = argparse.ArgumentParser(description="Resample via vLLM from custom JSONL")
     parser.add_argument("--input", required=True, help="Input JSONL path")
-    parser.add_argument("--endpoint", default="http://127.0.0.1:8000/v1/chat/completions")
-    parser.add_argument("--model", default=None, help="Model name (auto-detect if empty)")
+    parser.add_argument("--endpoint", action="append", default=[], help="vLLM API endpoint (可指定多个，如 --endpoint http://...1 --endpoint http://...2)")
+    parser.add_argument("--model", default=None, help="Model name (auto-detect if empty, 多 endpoint 时忽略)")
     parser.add_argument("--output", required=True, help="Output JSONL path")
     parser.add_argument("--limit", type=int, default=None, help="Max samples")
     parser.add_argument("--concurrency", type=int, default=32, help="Max concurrent requests")
@@ -105,7 +105,8 @@ def load_seen(path: str, id_key: str | None = None) -> set:
     return seen
 
 
-async def worker(sem, session, queue, args, out_fh, progress, stats):
+async def worker(sem, session, queue, args, out_fh, progress, stats, endpoints, models):
+    import random
     while True:
         item = await queue.get()
         if item is None:
@@ -116,12 +117,15 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
         total_cost = 0.0
         finish_reason = None
         sample_error = None
+        used_model = ""
 
         for idx in assistant_positions:
-            # 取到当前 assistant 位置（不包括它）作为上下文
+            # 随机选一个 endpoint
+            ep = random.choice(endpoints)
+            used_model = models[ep]
             context = msgs[:idx]
             payload = {
-                "model": args.model,
+                "model": used_model,
                 "messages": context,
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
@@ -131,11 +135,10 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
 
             step_start = time.time()
             try:
-                async with sem, session.post(args.endpoint, json=payload) as resp:
+                async with sem, session.post(ep, json=payload) as resp:
                     data = await resp.json()
                 choice = data["choices"][0]
                 new_content = choice["message"]["content"]
-                # 替换当前 assistant 消息
                 msgs[idx]["content"] = new_content
                 total_cost += time.time() - step_start
                 if finish_reason is None:
@@ -158,7 +161,7 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
                 "source_id": item["source_id"],
                 "conversations": msgs,
                 "metadata": {
-                    "model": args.model,
+                    "model": used_model,
                     "latency_s": round(total_cost, 3),
                     "num_resampled": len(assistant_positions),
                     "finish_reason": finish_reason,
@@ -175,37 +178,40 @@ async def worker(sem, session, queue, args, out_fh, progress, stats):
 
 async def main():
     args = parse_args()
-    if args.model is None:
-        args.model = await detect_model(args.endpoint)
-    print(f"Endpoint: {args.endpoint}")
-    print(f"Model: {args.model}")
-    print(f"Input: {args.input}")
+
+    # 解析 endpoints
+    endpoints = args.endpoint or ["http://127.0.0.1:8000/v1/chat/completions"]
+    if args.model:
+        models = {ep: args.model for ep in endpoints}
+    else:
+        models = {ep: await detect_model(ep) for ep in endpoints}
+    for ep, model in models.items():
+        print(f"  [{model}] {ep}")
+
+    print(f"Input:  {args.input}")
     print(f"Output: {args.output}")
 
     id_key = args.id_key
     seen = load_seen(args.output, id_key) if args.resume else set()
-
-    print(f"ID key: {id_key or 'auto (source_index > id > source_id)'}")
+    stats = {"ok": 0, "errors": 0}
 
     with open(args.input) as f:
         raw = f.read().strip()
-        # 尝试 JSON（list 或 object），回退到 JSONL
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             parsed = None
-
         if isinstance(parsed, list):
             samples = parsed
         elif isinstance(parsed, dict):
             samples = [parsed]
         else:
-            # JSONL: 每行一个 JSON
             samples = [json.loads(line) for line in raw.split("\n") if line.strip()]
 
     if args.limit:
         samples = samples[:args.limit]
     print(f"Samples: {len(samples)} (resume skip: {len(seen)})")
+    print(f"Endpoints: {len(endpoints)} ({', '.join(models.values())})")
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
     sem = asyncio.Semaphore(args.concurrency)
@@ -214,9 +220,10 @@ async def main():
 
     async with aiohttp.ClientSession(connector=connector) as session:
         with tqdm(total=len(samples), desc="Resampling", unit="sample", dynamic_ncols=True) as progress:
-            stats = {"ok": 0, "errors": 0}
-            workers = [asyncio.create_task(worker(sem, session, queue, args, out_fh, progress, stats))
-                       for _ in range(args.concurrency)]
+            workers = [
+                asyncio.create_task(worker(sem, session, queue, args, out_fh, progress, stats, endpoints, models))
+                for _ in range(args.concurrency)
+            ]
 
             for s in samples:
                 s_id_val = _get_id(s, id_key)

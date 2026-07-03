@@ -20,10 +20,11 @@ set -euo pipefail
 # 配置参数
 # ============================================================
 
-# 推理服务实例列表（支持多个 --instance）
-# 格式: model:gpus:port[:quant]
-# 例如: --instance /path/to/model:0,1:8000 --instance /path/to/model2:2,3:8001:ascend
+# 推理服务实例列表
+# --instance model:gpus:port[:quant]  完整指定（模型路径可不同）
+# --service  gpus:port[:quant]         共享 --model 路径
 INSTANCES=()
+SERVICES=()
 SERVING_TP="${SERVING_TP:-2}"
 SERVING_MAX_LEN="${SERVING_MAX_LEN:-8192}"
 
@@ -53,8 +54,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --instance) INSTANCES+=("$2"); shift 2 ;;
         --endpoint) ENDPOINTS+=("$2"); shift 2 ;;
-        # 单实例参数（兼容旧用法，会被合并到 INSTANCES）
+        # 多服务实例（共享 --model 路径）, 格式: gpus:port[:quant]
+        --service) SERVICES+=("$2"); shift 2 ;;
         --model) _MODEL="$2"; shift 2 ;;
+        # 旧单实例参数（兼容）
         --gpus) _GPUS="$2"; shift 2 ;;
         --port) _PORT="$2"; shift 2 ;;
         --quantization) _QUANT="$2"; shift 2 ;;
@@ -75,8 +78,10 @@ while [[ $# -gt 0 ]]; do
             echo "  resample   仅重采样（默认）"
             echo ""
             echo "服务参数:"
-            echo "  --instance STR    服务实例 (可多个), 格式: model:gpus:port[:quant]"
-            echo "                    如: --instance /m1:0,1:8000 --instance /m2:2,3:8001:ascend"
+            echo "  --model PATH      模型路径（多个服务共享）"
+            echo "  --service STR     服务实例 (可多个), 格式: gpus:port[:quant]"
+            echo "                    如: --model /m --service 0,1:8000 --service 2,3:8001:ascend"
+            echo "  --instance STR    完整指定 (模型可不同), 格式: model:gpus:port[:quant]"
             echo ""
             echo "重采样参数:"
             echo "  --input PATH      输入 JSONL/JSON 路径"
@@ -106,12 +111,17 @@ parse_instance() {
 }
 
 start_service() {
-    # 合并传统参数到 INSTANCES
-    if [ ${#INSTANCES[@]} -eq 0 ] && [ -n "${_MODEL:-}" ]; then
-        INSTANCES+=("${_MODEL}:${_GPUS:-0,1}:${_PORT:-8000}:${_QUANT:-}")
+    # 将 --service 合并到 INSTANCES（共享 --model）
+    local model="${_MODEL:-/path/to/model}"
+    for svc in "${SERVICES[@]}"; do
+        INSTANCES+=("${model}:${svc}")
+    done
+    # 合并传统单实例参数
+    if [ ${#INSTANCES[@]} -eq 0 ] && [ -n "${_GPUS:-}" ]; then
+        INSTANCES+=("${model}:${_GPUS}:${_PORT:-8000}:${_QUANT:-}")
     fi
     if [ ${#INSTANCES[@]} -eq 0 ]; then
-        INSTANCES+=("/path/to/model:0,1:8000:")
+        INSTANCES+=("${model}:0,1:8000:")
     fi
 
     local log_file="/tmp/vllm_resample.log"

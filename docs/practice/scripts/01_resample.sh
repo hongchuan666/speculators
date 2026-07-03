@@ -57,10 +57,10 @@ while [[ $# -gt 0 ]]; do
         # 多服务实例（共享 --model 路径）, 格式: gpus:port[:quant]
         --service) SERVICES+=("$2"); shift 2 ;;
         --model) _MODEL="$2"; shift 2 ;;
+        --quantization) _QUANT="$2"; shift 2 ;;
         # 旧单实例参数（兼容）
         --gpus) _GPUS="$2"; shift 2 ;;
         --port) _PORT="$2"; shift 2 ;;
-        --quantization) _QUANT="$2"; shift 2 ;;
         --input) INPUT_DATA="$2"; shift 2 ;;
         --output) OUTPUT_DATA="$2"; shift 2 ;;
         --limit) LIMIT="$2"; shift 2 ;;
@@ -79,8 +79,9 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "服务参数:"
             echo "  --model PATH      模型路径（多个服务共享）"
-            echo "  --service STR     服务实例 (可多个), 格式: gpus:port[:quant]"
-            echo "                    如: --model /m --service 0,1:8000 --service 2,3:8001:ascend"
+            echo "  --quantization STR 量化方式 (如 ascend, 所有 --service 共用)"
+            echo "  --service STR     服务实例 (可多个), 格式: gpus:port"
+            echo "                    如: --model /m --quantization ascend --service 0,1:8000 --service 2,3:8001"
             echo "  --instance STR    完整指定 (模型可不同), 格式: model:gpus:port[:quant]"
             echo ""
             echo "重采样参数:"
@@ -111,9 +112,13 @@ parse_instance() {
 }
 
 start_service() {
-    # 将 --service 合并到 INSTANCES（共享 --model）
+    # 将 --service 合并到 INSTANCES（共享 --model 和 --quantization）
     local model="${_MODEL:-/path/to/model}"
     for svc in "${SERVICES[@]}"; do
+        # 若 --service 没指定 quant，但 --quantization 有值，则补上
+        if [[ "${svc}" != *:*:* ]] && [ -n "${_QUANT:-}" ]; then
+            svc="${svc}:${_QUANT}"
+        fi
         INSTANCES+=("${model}:${svc}")
     done
     # 合并传统单实例参数

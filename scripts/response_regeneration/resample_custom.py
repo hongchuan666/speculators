@@ -217,7 +217,7 @@ async def main():
     skipped_resume = len(samples) - len(active)
     samples = active
 
-    print(f"Samples: {len(samples)} active, {skipped_resume} resume-skipped")
+    print(f"Samples: {len(samples)} active + {skipped_resume} resume-skipped = {len(samples) + skipped_resume} total")
     print(f"Endpoints: {len(endpoints)} ({', '.join(models.values())})")
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
@@ -270,6 +270,8 @@ async def main():
         extras.append(f"trimmed={stats['trimmed']}")
     if stats.get("empty_after_trim"):
         extras.append(f"empty_after_trim={stats['empty_after_trim']}")
+    if skipped_resume:
+        extras.append(f"resume_skip={skipped_resume}")
     extra_str = f" ({', '.join(extras)})" if extras else ""
     print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}{extra_str}")
 

@@ -100,12 +100,14 @@ def load_seen(path: str, id_key: str | None = None) -> tuple[set, dict[str, int]
         return set(), {}
     seen = set()
     reasons: dict[str, int] = {}
+    no_id_lines = 0
     with open(path) as f:
         for line in f:
             try:
                 d = json.loads(line)
                 sid = _get_id(d, id_key)
                 if sid is None:
+                    no_id_lines += 1
                     continue
                 seen.add(sid)
                 meta = d.get("metadata", {})
@@ -120,6 +122,19 @@ def load_seen(path: str, id_key: str | None = None) -> tuple[set, dict[str, int]
             except json.JSONDecodeError:
                 reasons["invalid_json"] = reasons.get("invalid_json", 0) + 1
                 continue
+    if no_id_lines:
+        reasons["no_id"] = no_id_lines
+        # 输出第一行没有 ID 的样本 key 作为提示
+        with open(path) as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                    if _get_id(d, id_key) is None:
+                        print(f"  ⚠️  输出文件存在无 ID 的行, keys={list(d.keys())}")
+                        print(f"     id_key={id_key or 'auto(source_index > id > source_id)'}")
+                        break
+                except json.JSONDecodeError:
+                    continue
     return seen, reasons
 
 

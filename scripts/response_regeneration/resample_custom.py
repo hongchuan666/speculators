@@ -279,7 +279,7 @@ async def main():
         print(f"  [debug] None in seen: {None in seen}")
         print(f"  [debug] seen size: {len(seen)}")
 
-    print(f"Samples: {len(samples)} active + {skipped_resume} resume-skipped = {len(samples) + skipped_resume} total")
+    print(f"Samples: {len(samples)} active + {skipped_resume} resume-skipped = {len(samples) + skipped_resume} total (seen={len(seen)})")
     if skipped_no_id:
         print(f"  ↳ 其中 {skipped_no_id} 条因无 ID 字段跳过")
     if skipped_seen:

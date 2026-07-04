@@ -85,11 +85,13 @@ def _find_assistant_positions(d: dict) -> tuple[list[dict], list[int]]:
         raise ValueError(f"Cannot find messages in record keys={list(d.keys())}")
 
     # 跳过开头的 assistant 消息（如 [gpt, user, gpt] → [user, gpt]）
+    trimmed = 0
     while msgs and msgs[0]["role"] == "assistant":
         msgs.pop(0)
+        trimmed += 1
 
     positions = [i for i, m in enumerate(msgs) if m["role"] == "assistant"]
-    return msgs, positions
+    return msgs, positions, trimmed
 
 
 def load_seen(path: str, id_key: str | None = None) -> set:
@@ -233,13 +235,15 @@ async def main():
             for s in samples:
                 s_id_val = _get_id(s, id_key)
                 try:
-                    msgs, positions = _find_assistant_positions(s)
+                    msgs, positions, trimmed = _find_assistant_positions(s)
                 except ValueError:
                     # 无法解析（如找不到 messages 字段）
                     stats["errors"] += 1
                     progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
                     progress.update(1)
                     continue
+                if trimmed:
+                    stats["trimmed"] = stats.get("trimmed", 0) + 1
                 if not positions:
                     # 没有 assistant 消息，跳过
                     stats["errors"] += 1
@@ -261,7 +265,9 @@ async def main():
     out_fh.close()
 
     total_proc = stats["ok"] + stats["errors"]
-    print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}")
+    trimmed = stats.get("trimmed", 0)
+    print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}"
+          + (f" (trimmed={trimmed})" if trimmed else ""))
 
 
 if __name__ == "__main__":

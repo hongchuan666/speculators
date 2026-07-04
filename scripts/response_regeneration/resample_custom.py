@@ -94,17 +94,33 @@ def _find_assistant_positions(d: dict) -> tuple[list[dict], list[int]]:
     return msgs, positions, trimmed
 
 
-def load_seen(path: str, id_key: str | None = None) -> set:
+def load_seen(path: str, id_key: str | None = None) -> tuple[set, dict[str, int]]:
+    """返回 (seen_ids, reason_counts) — 记录输出文件中每条数据的状态。"""
     if not os.path.isfile(path):
-        return set()
+        return set(), {}
     seen = set()
+    reasons: dict[str, int] = {}
     with open(path) as f:
         for line in f:
             try:
-                seen.add(_get_id(json.loads(line), id_key))
+                d = json.loads(line)
+                sid = _get_id(d, id_key)
+                if sid is None:
+                    continue
+                seen.add(sid)
+                meta = d.get("metadata", {})
+                if meta.get("error"):
+                    reasons["error"] = reasons.get("error", 0) + 1
+                elif meta.get("skipped"):
+                    reasons["skipped_raw"] = reasons.get("skipped_raw", 0) + 1
+                elif meta.get("finish_reason"):
+                    reasons["ok"] = reasons.get("ok", 0) + 1
+                else:
+                    reasons["unknown"] = reasons.get("unknown", 0) + 1
             except json.JSONDecodeError:
+                reasons["invalid_json"] = reasons.get("invalid_json", 0) + 1
                 continue
-    return seen
+    return seen, reasons
 
 
 async def worker(sem, session, queue, args, out_fh, progress, stats, endpoints, models):
@@ -194,7 +210,13 @@ async def main():
     print(f"Output: {args.output}")
 
     id_key = args.id_key
-    seen = load_seen(args.output, id_key) if args.resume else set()
+    seen = set()
+    resume_reasons: dict[str, int] = {}
+    if args.resume:
+        seen, resume_reasons = load_seen(args.output, id_key)
+        if resume_reasons:
+            parts = " + ".join(f"{k}={v}" for k, v in sorted(resume_reasons.items()))
+            print(f"  Resume skip breakdown: {parts}")
     stats = {"ok": 0, "errors": 0}
 
     with open(args.input) as f:
@@ -270,7 +292,10 @@ async def main():
         extras.append(f"trimmed={stats['trimmed']}")
     if stats.get("empty_after_trim"):
         extras.append(f"empty_after_trim={stats['empty_after_trim']}")
-    if skipped_resume:
+    if skipped_resume and resume_reasons:
+        parts = " + ".join(f"{k}={v}" for k, v in sorted(resume_reasons.items()))
+        extras.append(f"resume_skip({parts})")
+    elif skipped_resume:
         extras.append(f"resume_skip={skipped_resume}")
     extra_str = f" ({', '.join(extras)})" if extras else ""
     print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}{extra_str}")

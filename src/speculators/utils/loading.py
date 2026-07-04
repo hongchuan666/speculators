@@ -9,33 +9,6 @@ from loguru import logger
 from safetensors import safe_open
 
 
-def is_config_only_dir(path: str | Path) -> bool:
-    """Return True if ``path`` is a local directory with a ``config.json`` but no
-    weight files (``*.safetensors`` / ``*.bin``).
-
-    Used to distinguish a saved speculator *config* (from which a fresh draft is
-    initialized) from a full checkpoint whose weights should be loaded.
-
-    :param path: A local directory path. Hub ids and non-directories return False.
-    :return: True when the directory holds a config but no weights.
-    """
-    directory = Path(path)
-    if not directory.is_dir():
-        return False
-    has_config = (directory / "config.json").is_file()
-    # Weight files, plus sharded-checkpoint index files (e.g.
-    # model.safetensors.index.json) -- the latter end in .json and would not match
-    # the *.safetensors / *.bin globs, so a shard manifest must be checked explicitly
-    # to avoid treating an incomplete sharded checkpoint as config-only.
-    has_weights = (
-        any(directory.glob("*.safetensors"))
-        or any(directory.glob("*.bin"))
-        or any(directory.glob("*.safetensors.index.json"))
-        or any(directory.glob("*.bin.index.json"))
-    )
-    return has_config and not has_weights
-
-
 def list_checkpoint_keys(checkpoint_dir: str | Path) -> list[str]:
     """List all tensor keys in a checkpoint without loading weights.
 
@@ -46,19 +19,24 @@ def list_checkpoint_keys(checkpoint_dir: str | Path) -> list[str]:
     """
     checkpoint_dir = Path(checkpoint_dir)
 
-    index_path = checkpoint_dir / "model.safetensors.index.json"
-    if index_path.exists():
-        with index_path.open() as f:
-            return list(json.load(f)["weight_map"].keys())
+    index_names = ["model.safetensors.index.json", "quant_model_weights.safetensors.index.json"]
+    single_names = ["model.safetensors", "quant_model_weights.safetensors"]
 
-    single = checkpoint_dir / "model.safetensors"
-    if single.exists():
-        with safe_open(str(single), framework="pt") as f:
-            return list(f.keys())
+    for name in index_names:
+        p = checkpoint_dir / name
+        if p.exists():
+            with p.open() as f:
+                return list(json.load(f)["weight_map"].keys())
+
+    for name in single_names:
+        p = checkpoint_dir / name
+        if p.exists():
+            with safe_open(str(p), framework="pt") as f:
+                return list(f.keys())
 
     raise FileNotFoundError(
         f"No safetensors checkpoint found at {checkpoint_dir}. "
-        "Expected model.safetensors.index.json or model.safetensors."
+        "Expected model.safetensors or quant_model_weights.safetensors."
     )
 
 
@@ -76,20 +54,41 @@ def load_model_layers(
     :return: dict mapping input names/patterns to loaded tensors
     """
     # download the index file or build weight map for single-file models
-    try:
-        index_file = _resolve_file(model_path, "model.safetensors.index.json")
+    index_names = ["model.safetensors.index.json", "quant_model_weights.safetensors.index.json"]
+    single_names = ["model.safetensors", "quant_model_weights.safetensors"]
+
+    index_file = None
+    for name in index_names:
+        try:
+            index_file = _resolve_file(model_path, name)
+            break
+        except FileNotFoundError:
+            continue
+
+    if index_file is not None:
         with Path(index_file).open() as f:
             index = json.load(f)
         weight_map: dict[str, str] = index["weight_map"]
-    except (FileNotFoundError, EntryNotFoundError):
+    else:
         logger.warning(
-            "`model.safetensors.index.json` file not found. "
-            "Checking for `model.safetensors` instead."
+            "safetensors index not found. Checking for single safetensors file."
         )
-        model_file = _resolve_file(model_path, "model.safetensors")
+        model_file = None
+        for name in single_names:
+            try:
+                model_file = _resolve_file(model_path, name)
+                break
+            except FileNotFoundError:
+                continue
+        if model_file is None:
+            raise FileNotFoundError(
+                f"No safetensors checkpoint found at {model_path}. "
+                "Tried both HuggingFace (model.safetensors) and "
+                "msmodelslim (quant_model_weights.safetensors) naming."
+            )
         # Build virtual weight map for single-file models
         with safe_open(model_file, framework="pt", device="cpu") as f:
-            weight_map = dict.fromkeys(f.keys(), "model.safetensors")
+            weight_map = dict.fromkeys(f.keys(), model_file.name)
 
     # Resolve names: try exact match first, then suffix match
     name_to_key = {}  # Maps input name to actual checkpoint key

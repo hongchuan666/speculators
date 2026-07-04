@@ -255,15 +255,20 @@ async def main():
         samples = samples[:args.limit]
     # 预过滤 resume-skipped 样本
     active = []
+    skipped_no_id = 0
+    skipped_seen = 0
     for s in samples:
         sid = _get_id(s, id_key)
         if sid is None:
+            skipped_no_id += 1
             if args.debug:
                 print(f"  [debug] 输入样本无 ID: keys={list(s.keys())}")
+            continue
         if sid in seen:
+            skipped_seen += 1
             continue
         active.append(s)
-    skipped_resume = len(samples) - len(active)
+    skipped_resume = skipped_no_id + skipped_seen
     samples = active
 
     if args.debug:
@@ -275,6 +280,10 @@ async def main():
         print(f"  [debug] seen size: {len(seen)}")
 
     print(f"Samples: {len(samples)} active + {skipped_resume} resume-skipped = {len(samples) + skipped_resume} total")
+    if skipped_no_id:
+        print(f"  ↳ 其中 {skipped_no_id} 条因无 ID 字段跳过")
+    if skipped_seen:
+        print(f"  ↳ 其中 {skipped_seen} 条因已在输出文件中跳过")
     print(f"Endpoints: {len(endpoints)} ({', '.join(models.values())})")
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)

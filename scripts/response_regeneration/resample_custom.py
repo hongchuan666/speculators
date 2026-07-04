@@ -245,8 +245,8 @@ async def main():
                 if trimmed:
                     stats["trimmed"] = stats.get("trimmed", 0) + 1
                 if not positions:
-                    # 没有 assistant 消息，跳过
-                    stats["errors"] += 1
+                    # 裁剪后没有 assistant 消息（如全为 assistant 的对话）
+                    stats["empty_after_trim"] = stats.get("empty_after_trim", 0) + 1
                     progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
                     progress.update(1)
                     continue
@@ -264,10 +264,14 @@ async def main():
 
     out_fh.close()
 
-    total_proc = stats["ok"] + stats["errors"]
-    trimmed = stats.get("trimmed", 0)
-    print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}"
-          + (f" (trimmed={trimmed})" if trimmed else ""))
+    total_proc = stats["ok"] + stats["errors"] + stats.get("empty_after_trim", 0)
+    extras = []
+    if stats.get("trimmed"):
+        extras.append(f"trimmed={stats['trimmed']}")
+    if stats.get("empty_after_trim"):
+        extras.append(f"empty_after_trim={stats['empty_after_trim']}")
+    extra_str = f" ({', '.join(extras)})" if extras else ""
+    print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}{extra_str}")
 
 
 if __name__ == "__main__":

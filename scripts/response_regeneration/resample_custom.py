@@ -294,7 +294,6 @@ async def main():
                 try:
                     msgs, positions, trimmed = _find_assistant_positions(s)
                 except ValueError:
-                    # 无法解析（如找不到 messages 字段）
                     stats["errors"] += 1
                     progress.set_postfix(ok=stats["ok"], errors=stats["errors"], refresh=False)
                     progress.update(1)
@@ -322,6 +321,8 @@ async def main():
     out_fh.close()
 
     total_proc = stats["ok"] + stats["errors"] + stats.get("empty_after_trim", 0)
+    if total_proc != len(samples):
+        print(f"  ⚠️  Mismatch: processed {total_proc}/{len(samples)} (ok={stats['ok']} + error={stats['errors']} + empty={stats.get('empty_after_trim',0)})")
     extras = []
     if stats.get("trimmed"):
         extras.append(f"trimmed={stats['trimmed']}")

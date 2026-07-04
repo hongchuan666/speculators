@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument("--no-think", action="store_true", help="Disable thinking mode (Qwen3 enable_thinking=false)")
     parser.add_argument("--id-key", default=None, help="Field name for unique identifier (default: auto-detect source_index > id)")
+    parser.add_argument("--debug", action="store_true", help="Print debug info for resume-skip matching")
     return parser.parse_args()
 
 
@@ -253,9 +254,25 @@ async def main():
     if args.limit:
         samples = samples[:args.limit]
     # 预过滤 resume-skipped 样本
-    active = [s for s in samples if _get_id(s, id_key) not in seen]
+    active = []
+    for s in samples:
+        sid = _get_id(s, id_key)
+        if sid is None:
+            if args.debug:
+                print(f"  [debug] 输入样本无 ID: keys={list(s.keys())}")
+        if sid in seen:
+            continue
+        active.append(s)
     skipped_resume = len(samples) - len(active)
     samples = active
+
+    if args.debug:
+        seen_sample = list(seen)[:5] if seen else []
+        active_sample = [_get_id(s, id_key) for s in samples[:5]]
+        print(f"  [debug] seen 前5: {seen_sample}")
+        print(f"  [debug] active ID 前5: {active_sample}")
+        print(f"  [debug] None in seen: {None in seen}")
+        print(f"  [debug] seen size: {len(seen)}")
 
     print(f"Samples: {len(samples)} active + {skipped_resume} resume-skipped = {len(samples) + skipped_resume} total")
     print(f"Endpoints: {len(endpoints)} ({', '.join(models.values())})")

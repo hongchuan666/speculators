@@ -210,7 +210,12 @@ async def main():
 
     if args.limit:
         samples = samples[:args.limit]
-    print(f"Samples: {len(samples)} (resume skip: {len(seen)})")
+    # 预过滤 resume-skipped 样本
+    active = [s for s in samples if _get_id(s, id_key) not in seen]
+    skipped_resume = len(samples) - len(active)
+    samples = active
+
+    print(f"Samples: {len(samples)} active, {skipped_resume} resume-skipped")
     print(f"Endpoints: {len(endpoints)} ({', '.join(models.values())})")
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=args.concurrency * 4)
@@ -227,8 +232,6 @@ async def main():
 
             for s in samples:
                 s_id_val = _get_id(s, id_key)
-                if s_id_val in seen:
-                    continue
                 try:
                     msgs, positions = _find_assistant_positions(s)
                 except ValueError:
@@ -257,8 +260,8 @@ async def main():
 
     out_fh.close()
 
-    skipped = len(seen) if args.resume else 0
-    print(f"Done. OK={stats['ok']}, Errors={stats['errors']}, Skipped={skipped}")
+    total_proc = stats["ok"] + stats["errors"]
+    print(f"Done. OK={stats['ok']} + Error={stats['errors']} = {total_proc}/{len(samples)}")
 
 
 if __name__ == "__main__":

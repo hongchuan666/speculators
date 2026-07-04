@@ -122,6 +122,9 @@ def load_seen(path: str, id_key: str | None = None) -> tuple[set, dict[str, int]
             except json.JSONDecodeError:
                 reasons["invalid_json"] = reasons.get("invalid_json", 0) + 1
                 continue
+    # 补 0 确保全分类可见
+    for k in ("ok", "error", "skipped_raw", "unknown", "invalid_json", "no_id"):
+        reasons.setdefault(k, 0)
     if no_id_lines:
         reasons["no_id"] = no_id_lines
         # 输出第一行没有 ID 的样本 key 作为提示

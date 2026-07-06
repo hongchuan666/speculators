@@ -27,8 +27,9 @@ _DEFAULT_AIS="${HOME}/ais_benchmark"
 AIS_BENCH_DIR="${AIS_BENCH_DIR:-${_DEFAULT_AIS}}"
 AIS_BENCH_REPO="${AIS_BENCH_REPO:-https://github.com/AISBench/benchmark.git}"
 GSM8K_DATA_DIR="${GSM8K_DATA_DIR:-${AIS_BENCH_DIR}/ais_bench/datasets/gsm8k}"
-GSM8K_TRAIN_URL="${GSM8K_TRAIN_URL:-https://huggingface.co/datasets/openai/gsm8k/resolve/main/gsm8k/train.jsonl}"
-GSM8K_TEST_URL="${GSM8K_TEST_URL:-https://huggingface.co/datasets/openai/gsm8k/resolve/main/gsm8k/test.jsonl}"
+# GSM8K 数据集（HuggingFace Parquet 格式，需用 Python 转 JSONL）
+GSM8K_TRAIN_URL="${GSM8K_TRAIN_URL:-https://huggingface.co/datasets/openai/gsm8k/resolve/main/main/train-00000-of-00001.parquet}"
+GSM8K_TEST_URL="${GSM8K_TEST_URL:-https://huggingface.co/datasets/openai/gsm8k/resolve/main/main/test-00000-of-00001.parquet}"
 MINICONDA_URL="${MINICONDA_URL:-https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-$(uname -m).sh}"
 # pip 镜像源（国内加速，取消注释即可）
 # PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
@@ -167,17 +168,24 @@ download_gsm8k() {
     mkdir -p "${GSM8K_DATA_DIR}"
     echo "=== 下载 GSM8K 数据集 ==="
 
+    # GSM8K 上游已改为 Parquet 格式，需用 Python 读取后转成 JSONL
     if [ ! -f "${GSM8K_DATA_DIR}/train.jsonl" ]; then
-        echo "  下载 train.jsonl..."
-        wget -q --show-progress "${GSM8K_TRAIN_URL}" -O "${GSM8K_DATA_DIR}/train.jsonl"
+        echo "  下载 train.parquet 并转换为 JSONL..."
+        python3 -c "
+import pandas as pd
+df = pd.read_parquet('${GSM8K_TRAIN_URL}')
+df.to_json('${GSM8K_DATA_DIR}/train.jsonl', orient='records', lines=True, force_ascii=False)
+" && echo "  train: $(wc -l < "${GSM8K_DATA_DIR}/train.jsonl") 条"
     fi
-    echo "  train: $(wc -l < "${GSM8K_DATA_DIR}/train.jsonl") 条"
 
     if [ ! -f "${GSM8K_DATA_DIR}/test.jsonl" ]; then
-        echo "  下载 test.jsonl..."
-        wget -q --show-progress "${GSM8K_TEST_URL}" -O "${GSM8K_DATA_DIR}/test.jsonl"
+        echo "  下载 test.parquet 并转换为 JSONL..."
+        python3 -c "
+import pandas as pd
+df = pd.read_parquet('${GSM8K_TEST_URL}')
+df.to_json('${GSM8K_DATA_DIR}/test.jsonl', orient='records', lines=True, force_ascii=False)
+" && echo "  test:  $(wc -l < "${GSM8K_DATA_DIR}/test.jsonl") 条"
     fi
-    echo "  test:  $(wc -l < "${GSM8K_DATA_DIR}/test.jsonl") 条"
 }
 
 # ============================================================
